@@ -1,92 +1,206 @@
 """Shubham Mohta
 
-This is a sudoku solver made by Shubham Mohta.
+An optimized Sudoku solver using backtracking with constraint propagation
+and the Minimum Remaining Values (MRV) heuristic.
 
-This is in O(9^m) time complexity and O(m) space complexity where m is the number of empty cells on the board (0 <= m <= 81)
+Naive backtracking:         O(9^m)   — tries cells in fixed order
+This solver (MRV + forward checking): much better in practice — always
+picks the empty cell with the fewest valid candidates first, pruning the
+search tree significantly. Worst-case is still exponential (NP-complete),
+but on real puzzles it's orders of magnitude faster.
+
+Space complexity: O(m) for the recursion stack, where m = number of empty cells.
 """
 
-import time
 
-def first_empty_cell(sudoku_board: list[list]) -> tuple[int,int]|None:
-    """Finds the first empty cell on the board
-    
+# ─────────────────────────────────────────────
+# Board helpers
+# ─────────────────────────────────────────────
+
+def print_board(board: list[list[int]]) -> None:
+    """Prints the board with sudoku grid lines. Empty cells shown as '·'."""
+    for i, row in enumerate(board):
+        if i % 3 == 0 and i != 0:
+            print("──────┼───────┼──────")
+        row_str = ""
+        for j, num in enumerate(row):
+            if j % 3 == 0 and j != 0:
+                row_str += "│ "
+            row_str += (str(num) if num != 0 else "·") + " "
+        print(row_str)
+
+
+def is_valid_board(board: list[list[int]]) -> bool:
+    """Returns True if the starting board has no conflicting numbers.
+
     Preconditions:
-    - sudoku_board is a 9x9 matrix
+    - board is a 9x9 matrix with values 0-9 (0 = empty)
     """
-    
     for row in range(9):
         for col in range(9):
-            if sudoku_board[row][col] == 0:
-                return (row,col)
-    return None
+            num = board[row][col]
+            if num != 0:
+                board[row][col] = 0
+                if not _is_valid(board, row, col, num):
+                    board[row][col] = num
+                    return False
+                board[row][col] = num
+    return True
 
-def is_valid(sudoku_board: list[list], row: int, col: int, num: int) -> bool:
-    """Check if adding a number at a certain position is a valid move
-        
+
+# ─────────────────────────────────────────────
+# Constraint helpers
+# ─────────────────────────────────────────────
+
+def _is_valid(board: list[list[int]], row: int, col: int, num: int) -> bool:
+    """Returns True if placing num at (row, col) violates no sudoku rules.
+
     Preconditions:
-    - 0 < row < 10
-    - 0 < col < 10
-    - 0 < num < 10
+    - 0 <= row <= 8
+    - 0 <= col <= 8
+    - 1 <= num <= 9
+    - board[row][col] == 0
     """
-    # row check
-    if num in sudoku_board[row]:
+    if num in board[row]:
         return False
-    
-    # column check
     for r in range(9):
-        if sudoku_board[r][col] == num:
+        if board[r][col] == num:
             return False
-    
-    # subgrid check
-    start_row = 3 * (row // 3)
-    start_col = 3 * (col // 3)
+    sr, sc = 3 * (row // 3), 3 * (col // 3)
     for i in range(3):
         for j in range(3):
-            if sudoku_board[start_row + i][start_col + j] == num:
+            if board[sr + i][sc + j] == num:
                 return False
-    return True          
-    
-def solve_board(sudoku_board: list[list]) -> bool:
-    empty = first_empty_cell(sudoku_board)
-    if not empty:
-        return True  # Solved
+    return True
 
-    row, col = empty
-    for num in range(1, 10):
-        if is_valid(sudoku_board, row, col, num):
-            sudoku_board[row][col] = num
-            if solve_board(sudoku_board):
-                return True
-            sudoku_board[row][col] = 0  # Backtrack
 
-    return False  # Trigger backtracking
+def _candidates(board: list[list[int]], row: int, col: int) -> set[int]:
+    """Returns the set of valid numbers that can be placed at (row, col).
 
-def print_board(sudoku_board: list[list]) -> None:
-    """Given the 2D list of the sudoku board, this will return it in a way that's easier to read"""
-    for row in sudoku_board:
-        print('  '.join(str(num) for num in row))
+    Preconditions:
+    - 0 <= row <= 8
+    - 0 <= col <= 8
+    - board[row][col] == 0
+    """
+    used = set(board[row])
+    used |= {board[r][col] for r in range(9)}
+    sr, sc = 3 * (row // 3), 3 * (col // 3)
+    used |= {board[sr+i][sc+j] for i in range(3) for j in range(3)}
+    return set(range(1, 10)) - used
 
-def get_input() -> list[list]:
-    """Using a for loop that iterates a total of 81 times, this function will get the numbers that form the sudoku grid
-    
-    Precondition:
-    - the user only inputs integers"""
 
-    board = [[],[],[],[],[],[],[],[],[]]
+# ─────────────────────────────────────────────
+# MRV heuristic
+# ─────────────────────────────────────────────
+
+def _mrv_cell(board: list[list[int]]) -> tuple[int, int, set[int]] | None:
+    """Finds the empty cell with the fewest valid candidates (MRV heuristic).
+
+    Returns (row, col, candidates) for the most constrained empty cell,
+    or None if there are no empty cells left (board is solved).
+
+    If any empty cell has 0 candidates, returns it immediately so the
+    solver can backtrack without wasted work (forward checking).
+
+    Preconditions:
+    - board is a 9x9 matrix with values 0-9
+    """
+    best = None
+    best_count = 10
+
     for row in range(9):
         for col in range(9):
-            num = int(input("Number in the cell or 0 if empty:  "))
-            board[row].append(num)
-    print("Board has been input.")
-    print("This is the board:")
+            if board[row][col] == 0:
+                cands = _candidates(board, row, col)
+                if len(cands) == 0:
+                    return (row, col, cands)   # dead end — backtrack immediately
+                if len(cands) < best_count:
+                    best_count = len(cands)
+                    best = (row, col, cands)
+                    if best_count == 1:
+                        return best            # can't do better than 1 candidate
+
+    return best  # None if board is full
+
+
+# ─────────────────────────────────────────────
+# Solver
+# ─────────────────────────────────────────────
+
+def solve_board(board: list[list[int]]) -> bool:
+    """Solves the sudoku board in-place using backtracking + MRV + forward checking.
+
+    Returns True if a solution was found, False if no solution exists.
+
+    Preconditions:
+    - board is a valid 9x9 sudoku board with values 0-9
+    """
+    cell = _mrv_cell(board)
+    if cell is None:
+        return True  # No empty cells — solved!
+
+    row, col, cands = cell
+    if not cands:
+        return False  # Dead end — backtrack
+
+    for num in cands:
+        board[row][col] = num
+        if solve_board(board):
+            return True
+        board[row][col] = 0  # Backtrack
+
+    return False
+
+
+# ─────────────────────────────────────────────
+# Input
+# ─────────────────────────────────────────────
+
+def get_input() -> list[list[int]]:
+    """Prompts the user to enter the board one row at a time as a 9-digit string.
+
+    Each character should be a digit 1-9 for a filled cell, or 0 (or '.')
+    for an empty cell. Spaces are ignored.
+
+    Example valid row inputs:
+        530070000
+        5 3 0 0 7 0 0 0 0
+        53..7....
+
+    Preconditions:
+    - Each row input contains exactly 9 digits after stripping spaces and dots
+    """
+    print("Enter each row as a 9-digit string.")
+    print("Use 0 or '.' for empty cells. Spaces are ignored.")
+    print("Example: 530070000  or  5 3 0 . 7 . . . .\n")
+
+    board = []
+    for i in range(9):
+        while True:
+            raw = input(f"  Row {i + 1}: ").replace(" ", "").replace(".", "0")
+            if len(raw) == 9 and raw.isdigit() and all(0 <= int(ch) <= 9 for ch in raw):
+                board.append([int(ch) for ch in raw])
+                break
+            print("  Invalid. Enter exactly 9 digits (0-9). Try again.")
+
+    print("\nBoard entered:")
     print_board(board)
     return board
 
-board = get_input()
-time.sleep(1.5)
-print("\n\nSolving board:")
-if solve_board(board):
-    print("Board Solved!")
-    print_board(board)
-else:
-    print("No solution exists.")
+
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    board = get_input()
+
+    if not is_valid_board(board):
+        print("\nThis board is invalid — it already has conflicting numbers!")
+    else:
+        print("\nSolving...")
+        if solve_board(board):
+            print("Solved!\n")
+            print_board(board)
+        else:
+            print("No solution exists for this board.")
